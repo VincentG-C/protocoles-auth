@@ -1,53 +1,54 @@
-// Middleware : vérifie si l'utilisateur est authentifié via sa session
-function isAuthenticated(req, res, next) {
-  if (req.session && req.session.user) {
-    return next();
-  }
-  // Non authentifié → redirection vers la page de connexion
-  res.status(401);
-  res.redirect('/auth/login');
-}
+const jwt = require('jsonwebtoken');
 
-// Middleware : vérifie l'empreinte (IP + User-Agent) pour détecter une fraude (TP2 bonus 2)
-function fingerprintCheck(req, res, next) {
-  if (!req.session || !req.session.user) {
-    return next(); // pas de session, rien à vérifier
+// Middleware : vérifie le JWT (accessToken) dans le cookie ou le header Authorization
+function checkJWT(req, res, next) {
+  let token = null;
+
+  // 1. Essayer de récupérer le token depuis le cookie (pour les navigateurs)
+  if (req.cookies && req.cookies.accessToken) {
+    token = req.cookies.accessToken;
   }
 
-  const currentIP = req.ip;
-  const currentUA = req.headers['user-agent'] || '';
-
-  const sessionIP = req.session.fingerprintIP;
-  const sessionUA = req.session.fingerprintUA;
-
-  // Si les empreintes existent en session, on compare
-  if (sessionIP && sessionUA) {
-    if (sessionIP !== currentIP || sessionUA !== currentUA) {
-      // Empreinte différente → fraude suspectée
-      const db = require('../db');
-
-      // Enregistrer l'événement de fraude dans l'audit (bonus 3)
-      const stmt = db.prepare(
-        'INSERT INTO connexions_audit (username, action, ip_address, user_agent) VALUES (?, ?, ?, ?)'
-      );
-      stmt.run(req.session.user.username, 'FRAUD', currentIP, currentUA);
-
-      // Détruire la session
-      req.session.destroy((err) => {
-        if (err) console.error('Erreur lors de la destruction de session :', err);
-      });
-
-      return res.status(401).send(`
-        <html><body style="background:#111;color:red;text-align:center;padding:50px;">
-          <h1>🚨 ALERTE DE SÉCURITÉ</h1>
-          <p>Votre empreinte numérique a changé. Session détruite pour cause de fraude suspectée.</p>
-          <a href="/auth/login" style="color:yellow;">Retour à la connexion</a>
-        </body></html>
-      `);
+  // 2. Sinon, essayer depuis le header Authorization: Bearer <token> (Challenge 3)
+  if (!token) {
+    const authHeader = req.headers['authorization'];
+    if (authHeader && authHeader.startsWith('Bearer ')) {
+      token = authHeader.substring(7);
     }
   }
 
-  next();
+  if (!token) {
+    return res.status(401).json({ error: 'Token d\'accès manquant.' });
+  }
+
+  // Vérification du JWT
+  const secret = process.env.JWT_SECRET || 'fallback_secret';
+  jwt.verify(token, secret, (err, decoded) => {
+    if (err) {
+      if (err.name === 'TokenExpiredError') {
+        return res.status(401).json({ error: 'Token expiré.', code: 'TOKEN_EXPIRED' });
+      }
+      return res.status(401).json({ error: 'Token invalide.' });
+    }
+
+    // Stocker les informations de l'utilisateur dans req.user
+    req.user = {
+      id: decoded.id,
+      username: decoded.username,
+      role: decoded.role,
+      is2FAVerified: decoded.is2FAVerified || false
+    };
+
+    next();
+  });
 }
 
-module.exports = { isAuthenticated, fingerprintCheck };
+// Middleware : vérifie si l'utilisateur est ADMIN
+function requireAdmin(req, res, next) {
+  if (req.user && req.user.role === 'ADMIN') {
+    return next();
+  }
+  return res.status(403).json({ error: 'Accès refusé. Rôle administrateur requis.' });
+}
+
+module.exports = { checkJWT, requireAdmin };

@@ -1,164 +1,86 @@
 const express = require('express');
 const bcrypt = require('bcrypt');
-const db = require('../db');
+const jwt = require('jsonwebtoken');
+const crypto = require('crypto');
+const db = require('../config/db');
+const { checkJWT } = require('../middleware/authCheck');
 
 const router = express.Router();
 
-// ============================================================
-// GET /auth/login - Affiche le formulaire de connexion
-// ============================================================
-router.get('/login', (req, res) => {
-  // Afficher l'erreur si elle existe dans la query string
-  const error = req.query.error ? `<div class="alert alert-danger mt-3">${req.query.error}</div>` : '';
-
-  res.send(`
-<!DOCTYPE html>
-<html lang="fr">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Connexion - Batcave Security</title>
-  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
-</head>
-<body class="bg-dark text-light">
-  <div class="container min-vh-100 d-flex align-items-center justify-content-center">
-    <div class="card bg-secondary p-4" style="width: 100%; max-width: 400px;">
-      <h1 class="text-center mb-4">🦇 Connexion</h1>
-      <form action="/auth/login" method="POST">
-        <div class="mb-3">
-          <label for="username" class="form-label">Nom d'utilisateur</label>
-          <input type="text" class="form-control" id="username" name="username" required>
-        </div>
-        <div class="mb-3">
-          <label for="password" class="form-label">Mot de passe</label>
-          <input type="password" class="form-control" id="password" name="password" required>
-        </div>
-        <button type="submit" class="btn btn-warning w-100">Se connecter</button>
-      </form>
-      <p class="mt-3 text-center">
-        <a href="/register" class="text-warning">Pas encore de compte ? S'inscrire</a>
-      </p>
-      ${error}
-    </div>
-  </div>
-</body>
-</html>
-  `);
-});
+const JWT_SECRET = process.env.JWT_SECRET || 'fallback_secret';
+const ACCESS_TOKEN_EXPIRY = '15s';
+const REFRESH_TOKEN_DAYS = 7;
 
 // ============================================================
-// POST /auth/login - Traite la connexion utilisateur
+// Helpers
 // ============================================================
-router.post('/login', (req, res) => {
-  const { username, password } = req.body;
 
-  if (!username || !password) {
-    return res.redirect('/auth/login?error=Identifiants requis.');
-  }
-
-  // Recherche de l'utilisateur en base
-  const row = db.prepare('SELECT id, username, password, role FROM users WHERE username = ?').get(username.trim());
-
-  if (!row) {
-    return res.redirect('/auth/login?error=Nom d\'utilisateur ou mot de passe incorrect.');
-  }
-
-  // Vérification du mot de passe avec bcrypt
-  const match = bcrypt.compareSync(password, row.password);
-  if (!match) {
-    return res.redirect('/auth/login?error=Nom d\'utilisateur ou mot de passe incorrect.');
-  }
-
-  // Régénération de la session (anti fixation de session)
-  req.session.regenerate((err) => {
-    if (err) {
-      console.error('Erreur lors de la régénération de session :', err);
-      return res.redirect('/auth/login?error=Erreur interne.');
-    }
-
-    // Stocker les informations utilisateur dans la session
-    req.session.user = {
-      id: row.id,
-      username: row.username,
-      role: row.role
-    };
-
-    // Bonus 2 : Stocker l'empreinte (IP + User-Agent)
-    req.session.fingerprintIP = req.ip;
-    req.session.fingerprintUA = req.headers['user-agent'] || '';
-
-    // Bonus 3 : Enregistrer la connexion dans l'audit
-    const stmt = db.prepare(
-      'INSERT INTO connexions_audit (username, action, ip_address, user_agent) VALUES (?, ?, ?, ?)'
-    );
-    stmt.run(row.username, 'LOGIN', req.ip, req.headers['user-agent'] || '');
-
-    // Sauvegarder explicitement puis rediriger
-    req.session.save((err) => {
-      if (err) {
-        console.error('Erreur lors de la sauvegarde de session :', err);
-        return res.redirect('/auth/login?error=Erreur interne.');
-      }
-      res.redirect('/bat-computer');
-    });
-  });
-});
-
-// ============================================================
-// GET /auth/logout - Déconnexion
-// ============================================================
-router.get('/logout', (req, res) => {
-  const username = req.session.user ? req.session.user.username : 'inconnu';
-
-  // Bonus 3 : Enregistrer la déconnexion dans l'audit
-  const stmt = db.prepare(
-    'INSERT INTO connexions_audit (username, action, ip_address, user_agent) VALUES (?, ?, ?, ?)'
+function generateAccessToken(user, is2FAVerified) {
+  return jwt.sign(
+    {
+      id: user.id,
+      username: user.username,
+      role: user.role,
+      is2FAVerified: is2FAVerified || false
+    },
+    JWT_SECRET,
+    { expiresIn: ACCESS_TOKEN_EXPIRY }
   );
-  stmt.run(username, 'LOGOUT', req.ip, req.headers['user-agent'] || '');
+}
 
-  // Détruire la session
-  req.session.destroy((err) => {
-    if (err) {
-      console.error('Erreur lors de la destruction de session :', err);
-    }
-    // Effacer le cookie du navigateur
-    res.clearCookie('bat identity');
-    res.redirect('/auth/login');
+function generateRefreshToken() {
+  return crypto.randomBytes(48).toString('hex');
+}
+
+function setTokenCookies(res, accessToken, refreshToken) {
+  res.cookie('accessToken', accessToken, {
+    httpOnly: true,
+    sameSite: 'strict',
+    secure: false,
+    maxAge: 15000
   });
-});
+
+  if (refreshToken) {
+    res.cookie('refreshToken', refreshToken, {
+      httpOnly: true,
+      sameSite: 'strict',
+      secure: false,
+      maxAge: 7 * 24 * 60 * 60 * 1000
+    });
+  }
+}
+
+function clearAuthCookies(res) {
+  res.clearCookie('accessToken');
+  res.clearCookie('refreshToken');
+}
 
 // ============================================================
-// POST /register - Inscription (route publique)
+// POST /api/auth/register - Inscription
 // ============================================================
 router.post('/register', (req, res) => {
   const { username, password } = req.body;
 
-  // Validation : username requis
   if (!username || !username.trim()) {
     return res.status(400).json({ error: 'Le nom d\'utilisateur est requis.' });
   }
 
-  // Validation : username sans espaces
   const trimmedUsername = username.trim();
   if (trimmedUsername.includes(' ')) {
     return res.status(400).json({ error: 'Le nom d\'utilisateur ne doit pas contenir d\'espaces.' });
   }
 
-  // Validation : password requis
   if (!password) {
     return res.status(400).json({ error: 'Le mot de passe est requis.' });
   }
 
-  // Validation : password 8 caractères minimum
   if (password.length < 8) {
     return res.status(400).json({ error: 'Le mot de passe doit contenir au moins 8 caractères.' });
   }
 
-  // Hachage du mot de passe avec bcrypt
   const salt = bcrypt.genSaltSync(10);
   const hashedPassword = bcrypt.hashSync(password, salt);
 
-  // Insertion en base
   try {
     const userCount = db.prepare('SELECT COUNT(*) AS count FROM users').get().count;
     const role = userCount === 0 ? 'ADMIN' : 'USER';
@@ -169,9 +91,168 @@ router.post('/register', (req, res) => {
     if (err.code === 'SQLITE_CONSTRAINT_UNIQUE') {
       return res.status(409).json({ error: 'Ce nom d\'utilisateur est déjà utilisé.' });
     }
-    console.error('Erreur lors de l\'inscription :', err);
-    return res.status(500).json({ error: 'Erreur interne du serveur.' });
+    console.error('Erreur inscription :', err);
+    return res.status(500).json({ error: 'Erreur interne.' });
   }
+});
+
+// ============================================================
+// POST /api/auth/login - Connexion
+// ============================================================
+router.post('/login', (req, res) => {
+  const { username, password } = req.body;
+
+  if (!username || !password) {
+    return res.status(400).json({ error: 'Identifiants requis.' });
+  }
+
+  const row = db.prepare('SELECT id, username, password, role FROM users WHERE username = ?').get(username.trim());
+
+  if (!row) {
+    return res.status(401).json({ error: 'Identifiants incorrects.' });
+  }
+
+  const match = bcrypt.compareSync(password, row.password);
+  if (!match) {
+    return res.status(401).json({ error: 'Identifiants incorrects.' });
+  }
+
+  const accessToken = generateAccessToken(row, false);
+  const refreshToken = generateRefreshToken();
+  const expiresAt = new Date(Date.now() + REFRESH_TOKEN_DAYS * 24 * 60 * 60 * 1000).toISOString();
+
+  db.prepare('INSERT INTO refresh_tokens (user_id, token, expires_at) VALUES (?, ?, ?)').run(
+    row.id, refreshToken, expiresAt
+  );
+
+  setTokenCookies(res, accessToken, refreshToken);
+
+  return res.json({
+    message: 'Connexion réussie.',
+    user: { id: row.id, username: row.username, role: row.role }
+  });
+});
+
+// ============================================================
+// POST /api/auth/refresh - Rafraîchir l'accessToken
+// ============================================================
+router.post('/refresh', (req, res) => {
+  const refreshToken = req.cookies && req.cookies.refreshToken;
+
+  if (!refreshToken) {
+    return res.status(401).json({ error: 'Refresh token manquant.' });
+  }
+
+  const row = db.prepare(
+    'SELECT rt.*, u.username, u.role FROM refresh_tokens rt JOIN users u ON rt.user_id = u.id WHERE rt.token = ?'
+  ).get(refreshToken);
+
+  if (!row) {
+    clearAuthCookies(res);
+    return res.status(401).json({ error: 'Refresh token invalide.' });
+  }
+
+  if (new Date(row.expires_at) < new Date()) {
+    db.prepare('DELETE FROM refresh_tokens WHERE id = ?').run(row.id);
+    clearAuthCookies(res);
+    return res.status(401).json({ error: 'Refresh token expiré.' });
+  }
+
+  // Challenge 1 : ROTATION
+  if (row.used === 1) {
+    db.prepare('DELETE FROM refresh_tokens WHERE user_id = ?').run(row.user_id);
+    clearAuthCookies(res);
+    return res.status(401).json({
+      error: 'Rotation compromise. Tous les jetons de cet utilisateur ont été révoqués.'
+    });
+  }
+
+  db.prepare('UPDATE refresh_tokens SET used = 1 WHERE id = ?').run(row.id);
+
+  const newRefreshToken = generateRefreshToken();
+  const expiresAt = new Date(Date.now() + REFRESH_TOKEN_DAYS * 24 * 60 * 60 * 1000).toISOString();
+  db.prepare('INSERT INTO refresh_tokens (user_id, token, expires_at) VALUES (?, ?, ?)').run(
+    row.user_id, newRefreshToken, expiresAt
+  );
+
+  const user = { id: row.user_id, username: row.username, role: row.role };
+  const accessToken = generateAccessToken(user, false);
+
+  setTokenCookies(res, accessToken, newRefreshToken);
+
+  return res.json({ message: 'Token rafraîchi avec succès.' });
+});
+
+// ============================================================
+// POST /api/auth/logout - Déconnexion
+// ============================================================
+router.post('/logout', (req, res) => {
+  const refreshToken = req.cookies && req.cookies.refreshToken;
+
+  if (refreshToken) {
+    db.prepare('DELETE FROM refresh_tokens WHERE token = ?').run(refreshToken);
+  }
+
+  clearAuthCookies(res);
+  return res.json({ message: 'Déconnexion réussie.' });
+});
+
+// ============================================================
+// POST /api/auth/change-password - Changer mot de passe
+// ============================================================
+router.post('/change-password', checkJWT, (req, res) => {
+  const { oldPassword, newPassword } = req.body;
+
+  if (!oldPassword || !newPassword) {
+    return res.status(400).json({ error: 'Ancien et nouveau mot de passe requis.' });
+  }
+
+  const user = db.prepare('SELECT * FROM users WHERE id = ?').get(req.user.id);
+  if (!user) {
+    return res.status(404).json({ error: 'Utilisateur introuvable.' });
+  }
+
+  const match = bcrypt.compareSync(oldPassword, user.password);
+  if (!match) {
+    return res.status(403).json({ error: 'Ancien mot de passe incorrect.' });
+  }
+
+  // Validation ANSSI côté serveur uniquement
+  const regexANSSI = /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[!@#$%^&*()_+\-=\[\]{};':"\\|,.<>\/?]).{12,}$/;
+  if (!regexANSSI.test(newPassword)) {
+    return res.status(400).json({
+      error: 'Le nouveau mot de passe doit contenir au moins 12 caractères, une majuscule, une minuscule, un chiffre et un caractère spécial.'
+    });
+  }
+
+  const salt = bcrypt.genSaltSync(10);
+  const hashedPassword = bcrypt.hashSync(newPassword, salt);
+  db.prepare('UPDATE users SET password = ? WHERE id = ?').run(hashedPassword, user.id);
+
+  return res.json({ message: 'Mot de passe modifié avec succès.' });
+});
+
+// ============================================================
+// Challenge 2 : POST /api/auth/verify-2fa
+// ============================================================
+router.post('/verify-2fa', checkJWT, (req, res) => {
+  const { code } = req.body;
+
+  if (code !== '123456') {
+    return res.status(403).json({ error: 'Code de validation incorrect.' });
+  }
+
+  const user = db.prepare('SELECT id, username, role FROM users WHERE id = ?').get(req.user.id);
+  const accessToken = generateAccessToken(user, true);
+
+  res.cookie('accessToken', accessToken, {
+    httpOnly: true,
+    sameSite: 'strict',
+    secure: false,
+    maxAge: 15000
+  });
+
+  return res.json({ message: 'Validation 2FA réussie. Accès à la Batmobile autorisé.' });
 });
 
 module.exports = router;

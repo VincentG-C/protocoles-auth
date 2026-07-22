@@ -1,4 +1,4 @@
-document.getElementById('registerForm').addEventListener('submit', async (e) => {
+document.getElementById('loginForm').addEventListener('submit', async (e) => {
   e.preventDefault();
 
   const username = document.getElementById('username').value;
@@ -6,7 +6,7 @@ document.getElementById('registerForm').addEventListener('submit', async (e) => 
   const messageEl = document.getElementById('message');
 
   try {
-    const response = await fetch('/api/auth/register', {
+    const response = await fetch('/api/auth/login', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ username, password })
@@ -16,14 +16,12 @@ document.getElementById('registerForm').addEventListener('submit', async (e) => 
 
     if (response.ok) {
       messageEl.className = 'mt-3 alert alert-success';
-      messageEl.textContent = 'Inscription réussie ! Vous pouvez maintenant vous connecter.';
-      document.getElementById('registerForm').reset();
-    } else if (response.status === 409) {
-      messageEl.className = 'mt-3 alert alert-danger';
-      messageEl.textContent = data.error || 'Ce nom d\'utilisateur est déjà utilisé.';
+      messageEl.textContent = 'Connexion réussie ! Redirection...';
+      // Les cookies sont automatiquement définis par le serveur
+      setTimeout(() => { window.location.href = '/dashboard'; }, 500);
     } else {
       messageEl.className = 'mt-3 alert alert-danger';
-      messageEl.textContent = data.error || 'Erreur lors de l\'inscription.';
+      messageEl.textContent = data.error || 'Erreur de connexion.';
     }
   } catch (err) {
     messageEl.className = 'mt-3 alert alert-danger';

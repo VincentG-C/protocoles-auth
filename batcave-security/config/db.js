@@ -1,10 +1,9 @@
 const Database = require('better-sqlite3');
-const path = require('path');
 
 const db = new Database('database.db');
 db.pragma('journal_mode = WAL');
 
-// Création de la table users
+// Table users
 db.exec(`
   CREATE TABLE IF NOT EXISTS users (
     id       INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -14,7 +13,19 @@ db.exec(`
   )
 `);
 
-// Création de la table reports
+// Table refresh_tokens (TP3)
+db.exec(`
+  CREATE TABLE IF NOT EXISTS refresh_tokens (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id    INTEGER NOT NULL,
+    token      TEXT UNIQUE NOT NULL,
+    expires_at DATETIME NOT NULL,
+    used       INTEGER NOT NULL DEFAULT 0,
+    FOREIGN KEY (user_id) REFERENCES users(id)
+  )
+`);
+
+// Table reports (TP1 legacy)
 db.exec(`
   CREATE TABLE IF NOT EXISTS reports (
     id      INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -25,26 +36,7 @@ db.exec(`
   )
 `);
 
-// Création de la table logs (TP1 bonus)
-db.exec(`
-  CREATE TABLE IF NOT EXISTS logs (
-    id        INTEGER PRIMARY KEY AUTOINCREMENT,
-    username  TEXT NOT NULL,
-    route     TEXT NOT NULL,
-    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-  )
-`);
-
-// Création de la table de sessions persistantes (TP2 bonus 1)
-db.exec(`
-  CREATE TABLE IF NOT EXISTS sessions (
-    sid       TEXT PRIMARY KEY,
-    data      TEXT NOT NULL,
-    expired_at DATETIME NOT NULL
-  )
-`);
-
-// Création de la table connexions_audit (TP2 bonus 3)
+// Table connexions_audit (TP2 bonus)
 db.exec(`
   CREATE TABLE IF NOT EXISTS connexions_audit (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,

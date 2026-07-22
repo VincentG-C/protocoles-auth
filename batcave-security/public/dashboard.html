@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Tableau de bord - Batcave Security</title>
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+  <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css" rel="stylesheet">
+</head>
+<body class="bg-dark text-light">
+  <div class="container py-5">
+    <header class="text-center mb-5">
+      <h1>🦇 Tableau de bord</h1>
+      <p class="lead" id="welcomeMessage">Bienvenue, Justicier</p>
+      <button id="logoutBtn" class="btn btn-outline-danger btn-sm">Déconnexion</button>
+      <button id="refreshBtn" class="btn btn-outline-info btn-sm ms-2">Rafraîchir les données</button>
+    </header>
+
+    <!-- Section Profil -->
+    <section class="mb-5">
+      <h2>👤 Mon profil</h2>
+      <div id="profileInfo" class="card bg-secondary p-3 mt-3">
+        <p>Chargement...</p>
+      </div>
+    </section>
+
+    <!-- Section Changement de mot de passe -->
+    <section class="mb-5">
+      <h2>🔑 Changer le mot de passe</h2>
+      <form id="changePasswordForm" class="card bg-secondary p-3 mt-3">
+        <div class="mb-3">
+          <label for="oldPassword" class="form-label">Ancien mot de passe</label>
+          <input type="password" class="form-control" id="oldPassword" required>
+        </div>
+        <div class="mb-3">
+          <label for="newPassword" class="form-label">Nouveau mot de passe</label>
+          <input type="password" class="form-control" id="newPassword" required>
+          <div class="form-text text-light">Minimum 12 caractères, 1 majuscule, 1 minuscule, 1 chiffre, 1 caractère spécial.</div>
+        </div>
+        <button type="submit" class="btn btn-warning">Changer le mot de passe</button>
+        <div id="changePasswordMessage" class="mt-2"></div>
+      </form>
+    </section>
+
+    <!-- Section 2FA / Batmobile (Challenge 2) -->
+    <section class="mb-5">
+      <h2>🚗 Accès Batmobile</h2>
+      <div class="card bg-secondary p-3 mt-3">
+        <button id="batmobileBtn" class="btn btn-danger mb-3">Accéder aux commandes de la Batmobile</button>
+        <div id="batmobileResult"></div>
+        <div id="twofaSection" class="mt-3" style="display:none;">
+          <p class="text-warning">🔐 Double validation requise. Entrez le code secret envoyé par Alfred :</p>
+          <div class="row g-2">
+            <div class="col-auto">
+              <input type="text" id="twofaCode" class="form-control" placeholder="Code (123456)" maxlength="6">
+            </div>
+            <div class="col-auto">
+              <button id="verify2faBtn" class="btn btn-success">Valider</button>
+            </div>
+          </div>
+          <div id="twofaMessage" class="mt-2"></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Section Refresh Token (informative) -->
+    <section>
+      <h2>🔄 Refresh Token</h2>
+      <div id="refreshInfo" class="card bg-secondary p-3 mt-3">
+        <p>Appuyez sur "Rafraîchir les données" pour tester le rafraîchissement automatique du token.</p>
+      </div>
+    </section>
+  </div>
+
+  <script src="dashboard.js"></script>
+</body>
+</html>
