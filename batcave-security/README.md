@@ -1,6 +1,6 @@
-# 🦇 Batcave Security - TP1
+# 🦇 Batcave Security - TP2 : Le système de badges
 
-Système d'authentification Basic Auth sécurisé par Bcrypt et stocké en SQLite pour gérer l'accès au Bat-Ordinateur.
+Système d'authentification par session (cookie signé) avec Express, SQLite et Bcrypt pour sécuriser l'accès au Bat-Ordinateur.
 
 ## 📦 Installation
 
@@ -21,16 +21,19 @@ Le serveur démarre sur `http://localhost:3000`.
 
 ```
 batcave-security/
-├── server.js              # Serveur Express principal
-├── package.json           # Configuration du projet
-├── database.db            # Base de données SQLite (créée au démarrage)
+├── server.js                    # Point d'entrée (imports, config sessions, routes principales)
+├── db.js                        # Module de connexion SQLite + création des tables
+├── package.json                 # Configuration du projet
+├── .env                         # Variables d'environnement (PORT, SESSION_SECRET)
+├── routes/
+│   └── auth.js                  # Routeur d'authentification (/auth/login, /auth/logout)
+├── middleware/
+│   ├── authCheck.js             # Middleware isAuthenticated + fingerprintCheck
+│   └── sqliteSessionStore.js    # Session Store persistant SQLite (bonus 1)
 ├── public/
-│   ├── register.html      # Page d'inscription
-│   ├── register.js        # Script d'inscription
-│   └── bat-computer.js    # Script de la page protégée
-├── private/
-│   └── bat-computer.html  # Page protégée du Bat-Ordinateur
-└── README.md              # Ce fichier
+│   ├── register.html            # Page d'inscription
+│   └── register.js              # Script d'inscription
+└── README.md                    # Ce fichier
 ```
 
 ## 🗄️ Tables SQLite
@@ -45,78 +48,76 @@ CREATE TABLE IF NOT EXISTS users (
 );
 ```
 
-### Table `reports`
+### Table `sessions` (bonus 1 - persistance)
 ```sql
-CREATE TABLE IF NOT EXISTS reports (
-  id         INTEGER PRIMARY KEY AUTOINCREMENT,
-  user_id    INTEGER NOT NULL,
-  content    TEXT NOT NULL,
-  created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-  FOREIGN KEY (user_id) REFERENCES users(id)
+CREATE TABLE IF NOT EXISTS sessions (
+  sid        TEXT PRIMARY KEY,
+  data       TEXT NOT NULL,
+  expired_at DATETIME NOT NULL
 );
 ```
 
-### Table `logs` (bonus)
+### Table `connexions_audit` (bonus 3 - audit)
 ```sql
-CREATE TABLE IF NOT EXISTS logs (
+CREATE TABLE IF NOT EXISTS connexions_audit (
   id         INTEGER PRIMARY KEY AUTOINCREMENT,
   username   TEXT NOT NULL,
-  route      TEXT NOT NULL,
-  created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+  action     TEXT NOT NULL,
+  ip_address TEXT,
+  user_agent TEXT,
+  timestamp  DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 ```
 
 ## 🛣️ Routes
 
-| Méthode | Route              | Auth Required | Description                          |
-|---------|--------------------|---------------|--------------------------------------|
-| POST    | `/register`        | Non           | Inscription d'un nouvel utilisateur  |
-| GET     | `/bat-computer`    | Oui           | Page protégée du Bat-Ordinateur      |
-| GET     | `/api/secrets`     | Oui           | Liste des gadgets de Batman (JSON)   |
-| GET     | `/api/me`          | Oui           | Infos de l'utilisateur connecté (JSON) |
-| POST    | `/api/reports`     | Oui           | Enregistrer un rapport de mission    |
-| POST    | `/logout`          | Non           | Déconnexion (invalidation côté client) |
+| Méthode | Route            | Auth Required | Description                            |
+|---------|------------------|---------------|----------------------------------------|
+| GET     | `/auth/login`    | Non           | Formulaire de connexion                |
+| POST    | `/auth/login`    | Non           | Traitement de la connexion avec session|
+| GET     | `/auth/logout`   | Oui           | Déconnexion + destruction session      |
+| GET     | `/bat-computer`  | Oui           | Page protégée du Bat-Ordinateur        |
+| POST    | `/register`      | Non           | Inscription d'un nouvel utilisateur    |
+| POST    | `/api/reports`   | Oui           | Enregistrer un rapport de mission      |
+| GET     | `/admin/audit`   | ADMIN seul    | Tableau des logs de connexion (bonus 3)|
 
-## ✅ Validation du TP
+## 🔐 Cycle de vie de la session
 
-### 1. Via un navigateur web
-1. Accédez à `http://localhost:3000/register` pour créer un compte (le premier utilisateur est automatiquement ADMIN).
-2. Accédez à `http://localhost:3000/bat-computer` - la boîte de dialogue Basic Auth native du navigateur apparaît.
-3. Saisissez vos identifiants pour accéder à la page protégée.
+1. **GET /auth/login** → Affiche un formulaire HTML (username + password).
+2. **POST /auth/login** → Vérifie les identifiants en base (bcrypt), régénère la session (`req.session.regenerate`), stocke `req.session.user = { username, id, role }`, sauvegarde et redirige vers `/bat-computer`.
+3. **GET /bat-computer** → Protégée par le middleware `isAuthenticated()`. Si pas de session → redirection 401 vers `/auth/login`.
+4. **GET /auth/logout** → Enregistre l'événement dans l'audit, détruit la session, efface le cookie, redirige vers `/auth/login`.
 
-### 2. Via Postman
-1. Méthode : `GET`
-2. URL : `http://localhost:3000/api/secrets`
-3. Onglet **Authorization** → Type: **Basic Auth** → Entrez username et password.
-4. Envoyez la requête.
+## ⚙️ Configuration des sessions
 
-### 3. Via cURL
-```bash
-curl -u "votre_pseudo:votre_pass" http://localhost:3000/api/secrets
+```javascript
+name: 'bat identity'       // Cookie renommé pour masquer express-session
+httpOnly: true              // Inaccessible via JavaScript côté client
+sameSite: 'strict'          // Anti-CSRF
+maxAge: 1800000             // 30 minutes d'inactivité avant déconnexion
 ```
-
-## ⚠️ Contraintes d'inscription
-
-- Le mot de passe doit contenir **au moins 8 caractères**.
-- Le nom d'utilisateur ne doit pas contenir d'espaces.
-- Les noms d'utilisateur sont uniques (retourne **409 Conflict** en cas de doublon).
 
 ## 🎯 Fonctionnalités Bonus
 
-### Rôle ADMIN
-- La table `users` contient une colonne `role` (par défaut `'USER'`).
-- Seuls les utilisateurs avec le rôle `'ADMIN'` peuvent accéder aux routes protégées.
-- **Le premier utilisateur inscrit est automatiquement ADMIN** pour permettre les tests.
-- Les utilisateurs suivants reçoivent le rôle `'USER'` et obtiennent une erreur **403 Forbidden**.
+### Bonus 1 : Sessions persistantes (SQLite)
+- Les sessions sont stockées dans la table SQLite `sessions`.
+- Un redémarrage du serveur (Ctrl+C puis `npm start`) ne perd pas la session active.
+- Implémentation : `middleware/sqliteSessionStore.js` implémente les méthodes `get`, `set`, `destroy`, `touch` de l'interface `express-session`.
 
-### Logs d'accès
-- Chaque accès à une route protégée est enregistré dans la table `logs` avec le nom d'utilisateur, la route et un horodatage.
-- Vérifiable avec l'extension VS Code SQLite Viewer.
+### Bonus 2 : Sécurité par empreinte (Fingerprinting)
+- Au login, l'IP (`req.ip`) et le User-Agent sont stockés dans `req.session`.
+- Le middleware `fingerprintCheck` compare ces valeurs à chaque requête sur les routes protégées.
+- En cas de non-correspondance → session détruite, événement `FRAUD` enregistré dans l'audit, page d'alerte affichée.
 
-### Blocage après 3 échecs
-- 3 erreurs de mot de passe consécutives → blocage **30 secondes**.
-- Retourne un code **429 Too Many Requests** pendant le blocage.
-- Compteur en mémoire (non persistant).
+### Bonus 3 : Audit de connexion
+- Table `connexions_audit` avec les colonnes : id, username, action (LOGIN/LOGOUT/FRAUD), ip_address, user_agent, timestamp.
+- Route `GET /admin/audit` (réservée aux ADMIN) : affiche un tableau Bootstrap des 100 derniers événements.
 
-### Route /logout
-- `POST /logout` : informe l'utilisateur qu'il doit effacer ses identifiants du gestionnaire de mots de passe (Basic Auth = pas de session).
+## ✅ Parcours de test
+
+1. Accédez à `http://localhost:3000/register` → créez un compte (le premier est ADMIN).
+2. Accédez à `http://localhost:3000/auth/login` → connectez-vous.
+3. Vous êtes redirigé vers `/bat-computer` avec message personnalisé.
+4. Cliquez sur "Déconnexion" → session détruite.
+5. Pour tester le bonus 1 : connectez-vous, coupez le serveur (Ctrl+C), relancez (`npm start`), rafraîchissez `/bat-computer` → toujours connecté.
+6. Pour tester l'audit : connectez-vous en tant qu'ADMIN, accédez à `/admin/audit`.
